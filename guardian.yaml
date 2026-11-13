@@ -1,0 +1,189 @@
+# =============================================================================
+# Bluelab Guardian — ESPHome firmware (Adafruit ESP32-S3 Feather)
+#
+# Talks to the Guardian's sensor board (a PIC18 microcontroller) over its UART
+# and exposes the readings, alarm thresholds and status to Home Assistant.
+# Replaces the Guardian's stock Wi-Fi module, which must be disconnected from
+# the sensor board's UART lines (see README.md, "Installation").
+#
+# Before building: copy secrets.yaml.example to secrets.yaml and fill it in.
+# Documentation: README.md. Protocol: docs/PROTOCOL.md.
+# =============================================================================
+
+substitutions:
+  name: guardian
+  friendly_name: "Bluelab Guardian"
+  # Board and sensor-board UART pins. The defaults are for the Adafruit
+  # ESP32-S3 Feather, product 5323 (8 MB flash, no PSRAM), the tested board.
+  board: adafruit_feather_esp32s3_nopsram
+  flash_size: 8MB
+  pic_tx_pin: GPIO39    # Feather pin "TX" -> sensor board RX
+  pic_rx_pin: GPIO38    # Feather pin "RX" <- sensor board TX
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  min_version: "2026.9.0"
+  project:
+    name: "esphome_guardian.bluelab_guardian"
+    version: "2026.11.10"
+
+esp32:
+  board: ${board}
+  flash_size: ${flash_size}
+  framework:
+    type: esp-idf
+
+# --- Load the Guardian UART component ---------------------------------------
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [guardian_uart]
+
+# --- Connectivity -----------------------------------------------------------
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot (with captive portal) if Wi-Fi is unreachable.
+  ap:
+    password: !secret ap_password
+
+captive_portal:
+
+logger:
+  level: INFO
+  # The Feather's USB-C is the ESP32-S3's native USB (USB Serial/JTAG).
+  hardware_uart: USB_SERIAL_JTAG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+# Over-the-air updates are encrypted and authenticated with the API key above
+# (no separate OTA password).
+ota:
+  - platform: esphome
+    encryption: {}
+
+# --- The sensor-board link --------------------------------------------------
+# Fixed by the hardware: 57600 baud, 8 data bits, no parity, 1 stop bit, 3.3 V.
+uart:
+  id: pic_uart
+  tx_pin: ${pic_tx_pin}
+  rx_pin: ${pic_rx_pin}
+  baud_rate: 57600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 1024
+  # DEBUGGING: uncomment to log every frame on the link in hex (one log line
+  # per frame; ">>>" = sent, "<<<" = received). A healthy poll is
+  # AA 06 03 03 07 04 00 10 BF, sent 3-100 ms after the board's frame. See
+  # docs/PROTOCOL.md, §14. Remove again when done.
+  # debug:
+  #   direction: BOTH
+  #   dummy_receiver: false
+  #   after:
+  #     timeout: 10ms
+  #   sequence:
+  #     - lambda: UARTDebug::log_hex(direction, bytes, ' ');
+
+# --- Diagnostics ------------------------------------------------------------
+# Uptime reveals unexpected reboots (it drops back to 0); Wi-Fi signal helps
+# explain API disconnects.
+sensor:
+  - platform: uptime
+    name: "Uptime"
+    entity_category: diagnostic
+  - platform: wifi_signal
+    name: "Wi-Fi signal"
+    update_interval: 60s
+    entity_category: diagnostic
+
+# --- Guardian entities ------------------------------------------------------
+# Remove any entity you don't want. See README.md, "Usage", for what each one means.
+guardian_uart:
+  uart_id: pic_uart
+
+  # Readings, published every second or two.
+  ec:
+    name: "EC"
+  ph:
+    name: "pH"
+  temperature:
+    name: "Temperature"
+
+  # Alarm status per sensor: ok / low / high, straight from the Guardian's low
+  # and high alarm flags.
+  ec_alarm_status:
+    name: "EC alarm status"
+  ph_alarm_status:
+    name: "pH alarm status"
+  temperature_alarm_status:
+    name: "Temperature alarm status"
+
+  # Reading status per sensor, from the status byte the board attaches to each
+  # reading: ok, under range, over range, disconnected, sensor fault or
+  # dependent sensor fault.
+  ec_reading_status:
+    name: "EC reading status"
+  ph_reading_status:
+    name: "pH reading status"
+  temperature_reading_status:
+    name: "Temperature reading status"
+
+  # The Guardian's "alarms set" flag.
+  alarms_set:
+    name: "Alarms set"
+
+  # On when the Guardian reports that the pH probe needs calibrating (pH is
+  # the only sensor the Guardian lets you calibrate, from its front panel).
+  ph_calibration_due:
+    name: "pH calibration due"
+
+  # Per-buffer pH calibration, as the Guardian's two calibration lamps show it:
+  # "due" (flashing), "calibrated" (steady) or "none" (off), and the electrode
+  # voltage the board recorded at each calibration.
+  ph4_calibration:
+    name: "pH 4 calibration"
+  ph7_calibration:
+    name: "pH 7 calibration"
+  ph10_calibration:
+    name: "pH 10 calibration"
+  ph4_calibration_voltage:
+    name: "pH 4 calibration voltage"
+  ph7_calibration_voltage:
+    name: "pH 7 calibration voltage"
+  ph10_calibration_voltage:
+    name: "pH 10 calibration voltage"
+
+  # Diagnostics: is the sensor board answering, and which mode is it in
+  # ("settings" while the Guardian is in settings mode, "calibration" while
+  # calibrating with its buttons).
+  link_connected:
+    name: "PIC link connected"
+  device_mode:
+    name: "Device mode"
+
+  # Raw board messages for protocol work: the state stream's status words and
+  # the pH calibration records, as text. Harmless to keep; remove if unwanted.
+  raw_status:
+    name: "Board status words"
+  raw_calibration:
+    name: "Board calibration records"
+
+  # Writable alarm thresholds, confirmed by reading them back from the Guardian.
+  ec_low_alarm:
+    name: "EC low alarm"
+  ec_high_alarm:
+    name: "EC high alarm"
+  ph_low_alarm:
+    name: "pH low alarm"
+  ph_high_alarm:
+    name: "pH high alarm"
+  temperature_low_alarm:
+    name: "Temperature low alarm"
+  temperature_high_alarm:
+    name: "Temperature high alarm"
